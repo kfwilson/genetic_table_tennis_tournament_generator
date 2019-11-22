@@ -3,15 +3,20 @@ import random
 from statistics import variance
 import time
 from typing import List, Set, Tuple, Union
+import warnings
 
 
-class Match:  # Gene
+class Match:
     players_per_match = 4
 
     def __init__(self, team_1: Union[List, Set, Tuple], team_2: Union[List, Set, Tuple]):
         self.team_1 = set(team_1)
         self.team_2 = set(team_2)
         assert not self.team_1.intersection(self.team_2), "No overlapping players between teams"
+
+    @property
+    def players(self):
+        return list(self.team_1) + list(self.team_2)
 
     def __eq__(self, other):
         return ((self.team_1 == other.team_1) and (self.team_2 == other.team_2)
@@ -23,30 +28,56 @@ class Match:  # Gene
     def __str__(self):
         return f'{self.team_1} - {self.team_2}'
 
-    def to_list(self):
-        return list(self.team_1) + list(self.team_2)
-
     @classmethod
-    def make_random_match_from_n_players(cls, num_players: int) -> 'Match':
+    def make_random_match_from_players(cls, players: Union[List, Set]) -> 'Match':
         """Generates a new random match by choosing ``players_per_match``
-        players at random from players 0, 1, ... , num_players and splitting
-        them into 2 teams.
+        players at random from players and splitting them into 2 teams.
         """
-        players = random.sample(range(num_players), cls.players_per_match)
+        players = random.sample(players, cls.players_per_match)
         return Match(players[:cls.players_per_match // 2], players[cls.players_per_match // 2:])
 
 
-# For simplicity, let's start with the case of a single Gene (match) played
-# simultaneously.
+class Round: # Gene
+    def __init__(self, matches: List[Match]):
+        # TODO: validate no repeat players across matches in a single round?
+        self.matches = matches
+
+    @property
+    def players(self) -> List:
+        players = []
+        for m in self.matches:
+            players.extend(m.players)
+        return players
+
+    def __str__(self):
+        matches = [f'{i+1}: {str(m)}' for i, m in enumerate(self.matches)]
+        return '\n'.join(matches)
+
+    @classmethod
+    def make_random_round_from_players(cls, matches_per_round: int, players: List) -> 'Round':
+        """Generates a new round (set of ``matches_per_round`` matches) from the
+        given set of players, ensuring that no single player plays twice in the
+        round."""
+        not_currently_playing = set(players)
+        matches = []
+        for _ in range(matches_per_round):
+            match = Match.make_random_match_from_players(not_currently_playing)
+            not_currently_playing -= set(match.players)
+            matches.append(match)
+        return Round(matches)
+
 
 class Tournament:  # Genome
-    def __init__(self, num_players: int, num_matches: int, matches: List['Match'] = None):
+    def __init__(self, num_players: int, num_rounds: int, matches_per_round: int, rounds: List['Round'] = None):
         self.num_players = num_players
-        self.num_matches = num_matches
-        if not matches:
-            self.matches = [Match.make_random_match_from_n_players(self.num_players) for _ in range(self.num_matches)]
+        self.num_rounds = num_rounds
+        # ASSUMING validate_simultaneous_matches has already been called to update this if needed
+        self.matches_per_round = matches_per_round
+        if not rounds:
+            self.rounds = [Round.make_random_round_from_players(self.matches_per_round, list(range(self.num_players)))
+                           for _ in range(self.num_rounds)]
         else:
-            self.matches = matches
+            self.rounds = rounds
 
     @property
     def fitness(self) -> float:
@@ -56,9 +87,9 @@ class Tournament:  # Genome
         """
         unique_matches = set()
         players = []
-        for g in self.matches:
-            unique_matches.add(g)
-            players.extend(g.to_list())
+        for g in self.rounds:
+            unique_matches.update(g.matches)
+            players.extend(g.players)
         # ensure if a player plays 0 matches in the current tournament, we still include them for variance calc
         play_counts = Counter({p: 0 for p in range(self.num_players)}) + Counter(players)
         return len(unique_matches) * (1 - variance(play_counts.values()))
@@ -68,37 +99,38 @@ class Tournament:  # Genome
         with a new random match with a probability of 0.9.
         """
         probability_of_mutation = 0.9
-        for i in range(len(self.matches)):
+        for i in range(len(self.rounds)):
             if random.random() < probability_of_mutation:
                 # TODO: do I want mutated gene to be based on original?
-                self.matches[i] = Match.make_random_match_from_n_players(self.num_players)
+                self.rounds[i] = Round.make_random_round_from_players(self.matches_per_round, (range(self.num_players)))
 
     def __str__(self):
-        return '\n'.join([str(g) for g in self.matches])
+        return '\n'.join([f'ROUND {i}:\n' + str(g) for i, g in enumerate(self.rounds)])
 
 
 def crossover(a: Tournament, b: Tournament) -> Tournament:
-    """Combines two 'parent' tournament (genomes) into an 'o'ffspring' tournament
-    by mixing the component matches (genes) of each parent. For each gene in
+    """Combines two 'parent' tournament (genomes) into an 'offspring' tournament
+    by mixing the component rounds (genes) of each parent. For each gene in
     the genome, each parent's gene has equal probability of being chosen to be
     inherited by the offspring.
     """
-    offspring_matches = []
+    offspring_rounds = []
     inheritance_from_a_probability = 0.5
-    for left, right in zip(a.matches, b.matches):
+    for left, right in zip(a.rounds, b.rounds):
         if random.random() < inheritance_from_a_probability:
-            offspring_matches.append(left)
+            offspring_rounds.append(left)
         else:
-            offspring_matches.append(right)
-    return Tournament(a.num_players, a.num_matches, offspring_matches)
+            offspring_rounds.append(right)
+    return Tournament(a.num_players, a.num_rounds, a.matches_per_round, offspring_rounds)
 
 
-def initial_population(size: int, num_players: int, num_matches: int) -> List[Tournament]:
+def initial_population(size: int, num_players: int, num_rounds: int, matches_per_round: int) -> List[Tournament]:
     """Generate a new population of ``size`` potential tournaments, each with
-    ``num_players`` players and ``num_matches`` matches. """
+    ``num_players`` players and ``num_rounds`` rounds of ``matches_per_round``
+    matches. """
     population = []
     for _ in range(size):
-        population.append(Tournament(num_players, num_matches))
+        population.append(Tournament(num_players, num_rounds, matches_per_round))
     return population
 
 
@@ -127,8 +159,25 @@ def next_generation(current_generation: List['Tournament']) -> List[Tournament]:
     return children
 
 
+def validate_simultaneous_matches(matches_per_round: int, num_players: int) -> int:
+    """Verify that the given number of matches can be played simultaneously with
+    the given number of players (e.g., 2 matches can't be played with 6 players
+    since each match requires 4 players). Asserts that at least a single match
+    can be played with the given number of players and returns the given matches
+    per round if it's possible, otherwise the maximum number of rounds that can
+    be played with the given players.
+    """
+    actual_matches_to_play = min(num_players // Match.players_per_match, matches_per_round)
+    assert actual_matches_to_play > 0, "Too few players to play even a single match."
+    if actual_matches_to_play != matches_per_round:
+        warnings.warn(f'You specified {matches_per_round} matches to be played simultaneously, but with {num_players} '
+                      f'players, only {actual_matches_to_play} can be played. Finding tournament with '
+                      f'{actual_matches_to_play} per round.')
+    return actual_matches_to_play
+
+
 def optimize_tournament(initial_population_size: int, generations_to_evolve: int, players_per_tournament: int,
-                        matches_per_tournament: int):
+                        rounds_per_tournament: int, matches_per_round: int):
     """Run the genetic algorithm for the given number of generations, with
     a starting population of the given size, tracking the fittest tournament
     found and the generation in which it was found to print at the end of the
@@ -142,11 +191,18 @@ def optimize_tournament(initial_population_size: int, generations_to_evolve: int
         The number of generations to run the algorithm for.
     players_per_tournament
         The number of players in each tournament.
-    matches_per_tournament
-        The number of matches each tournament should consist of.
+    rounds_per_tournament
+        The number of rounds each tournament should consist of.
+    matches_per_round
+        The number of matches played simultaneously per tournament.
     """
     start = time.time()
-    population = initial_population(initial_population_size, players_per_tournament, matches_per_tournament)
+
+    # let's up front fix the number of matches/round so we don't have to do it for each tournament
+    matches_per_round = validate_simultaneous_matches(matches_per_round, players_per_tournament)
+
+    population = initial_population(initial_population_size, players_per_tournament,
+                                    rounds_per_tournament, matches_per_round)
     elite = sorted(population, key=lambda g: g.fitness)[-1]
     generation_elite_found = 0
 
@@ -159,8 +215,8 @@ def optimize_tournament(initial_population_size: int, generations_to_evolve: int
             generation_elite_found = i
     end = time.time()
     players = []
-    for g in elite.matches:
-        players.extend(g.to_list())
+    for g in elite.rounds:
+        players.extend(g.players)
 
     print(f'Evolving for {generations_to_evolve} generations took {round(end-start)} seconds. The fittest tournament '
           f'was found in generation {generation_elite_found}. That tournament is: \n{elite}.')
@@ -168,4 +224,9 @@ def optimize_tournament(initial_population_size: int, generations_to_evolve: int
 
 
 if __name__ == "__main__":
-    optimize_tournament(100, 500, 13, 20)
+    pop_size = 100
+    generations = 1000
+    players = 13
+    rounds = 20
+    sim_matches = 2
+    optimize_tournament(pop_size, generations, players, rounds, sim_matches)
