@@ -1,22 +1,25 @@
-from collections import Counter
+from collections import Counter, namedtuple
+from pathlib import Path
 import random
 from statistics import variance
 import time
 from typing import List, Set, Tuple, Union
 import warnings
 
+import pandas as pd
+
 
 class Match:
     players_per_match = 4
 
     def __init__(self, team_1: Union[List, Set, Tuple], team_2: Union[List, Set, Tuple]):
-        self.team_1 = set(team_1)
-        self.team_2 = set(team_2)
-        assert not self.team_1.intersection(self.team_2), "No overlapping players between teams"
+        assert not set(team_1).intersection(team_2), "No overlapping players between teams"
+        self.team_1 = list(team_1)
+        self.team_2 = list(team_2)
 
     @property
     def players(self):
-        return list(self.team_1) + list(self.team_2)
+        return self.team_1 + self.team_2
 
     def __eq__(self, other):
         return ((self.team_1 == other.team_1) and (self.team_2 == other.team_2)
@@ -37,7 +40,7 @@ class Match:
         return Match(players[:cls.players_per_match // 2], players[cls.players_per_match // 2:])
 
 
-class Round: # Gene
+class Round:  # Gene
     def __init__(self, matches: List[Match]):
         # TODO: validate no repeat players across matches in a single round?
         self.matches = matches
@@ -102,10 +105,33 @@ class Tournament:  # Genome
         for i in range(len(self.rounds)):
             if random.random() < probability_of_mutation:
                 # TODO: do I want mutated gene to be based on original?
-                self.rounds[i] = Round.make_random_round_from_players(self.matches_per_round, (range(self.num_players)))
+                self.rounds[i] = Round.make_random_round_from_players(self.matches_per_round,
+                                                                      list(range(self.num_players)))
 
     def __str__(self):
         return '\n'.join([f'ROUND {i}:\n' + str(g) for i, g in enumerate(self.rounds)])
+
+    def record_metrics(self, out_file: Path):
+        games_played = Counter({p: 0 for p in range(self.num_players)})
+        unique_partners = {p: set() for p in range(self.num_players)}
+        unique_opponents = {p: set() for p in range(self.num_players)}
+        for r in self.rounds:
+            for m in r.matches:
+                games_played += Counter(m.players)
+                for i in range(2):
+                    team = m.team_1 if i == 0 else m.team_2
+                    other = m.team_2 if i == 0 else m.team_1
+                    unique_partners[team[0]].add(team[1])
+                    unique_partners[team[1]].add(team[0])
+                    unique_opponents[team[0]].update(other)
+                    unique_opponents[team[1]].update(other)
+
+        # format to work w/ existing analysis code
+        games_played = pd.Series(games_played, name='gamesPlayed')
+        unique_partners = pd.Series({k: len(v) for k, v in unique_partners.items()}, name='uniquePartners')
+        unique_opponents = pd.Series({k: len(v) for k, v in unique_opponents.items()}, name='uniqueOpponents')
+        (pd.concat([games_played, unique_partners, unique_opponents], axis=1).reset_index()
+         .rename(columns={'index': 'player'}).to_csv(out_file, index=False))
 
 
 def crossover(a: Tournament, b: Tournament) -> Tournament:
@@ -177,7 +203,7 @@ def validate_simultaneous_matches(matches_per_round: int, num_players: int) -> i
 
 
 def optimize_tournament(initial_population_size: int, generations_to_evolve: int, players_per_tournament: int,
-                        rounds_per_tournament: int, matches_per_round: int):
+                        rounds_per_tournament: int, matches_per_round: int) -> Tournament:
     """Run the genetic algorithm for the given number of generations, with
     a starting population of the given size, tracking the fittest tournament
     found and the generation in which it was found to print at the end of the
@@ -222,11 +248,14 @@ def optimize_tournament(initial_population_size: int, generations_to_evolve: int
           f'was found in generation {generation_elite_found}. That tournament is: \n{elite}.')
     print(f'Match counts by player in that tournament are as follows: {Counter(players)}')
 
+    return elite
+
 
 if __name__ == "__main__":
-    pop_size = 100
-    generations = 1000
+    pop_size = 5
+    generations = 10
     players = 13
     rounds = 20
     sim_matches = 2
-    optimize_tournament(pop_size, generations, players, rounds, sim_matches)
+    elite = optimize_tournament(pop_size, generations, players, rounds, sim_matches)
+    elite.record_metrics(Path(f"C:\\output\\tournament\\genetic_algorithm\\{time.time()}.csv"))
