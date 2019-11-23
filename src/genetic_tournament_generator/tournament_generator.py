@@ -130,8 +130,11 @@ class Tournament:  # Genome
         games_played = pd.Series(games_played, name='gamesPlayed')
         unique_partners = pd.Series({k: len(v) for k, v in unique_partners.items()}, name='uniquePartners')
         unique_opponents = pd.Series({k: len(v) for k, v in unique_opponents.items()}, name='uniqueOpponents')
-        (pd.concat([games_played, unique_partners, unique_opponents], axis=1).reset_index()
-         .rename(columns={'index': 'player'}).to_csv(out_file, index=False))
+        metrics = (pd.concat([games_played, unique_partners, unique_opponents], axis=1).reset_index()
+                   .rename(columns={'index': 'player'}))
+        metrics['numRounds'] = self.num_rounds
+        metrics['simMatches'] = self.matches_per_round
+        metrics.to_csv(out_file, index=False)
 
 
 def crossover(a: Tournament, b: Tournament) -> Tournament:
@@ -257,5 +260,9 @@ if __name__ == "__main__":
     players = 13
     rounds = 20
     sim_matches = 2
-    elite = optimize_tournament(pop_size, generations, players, rounds, sim_matches)
-    elite.record_metrics(Path(f"C:\\output\\tournament\\genetic_algorithm\\{time.time()}.csv"))
+    n_tournaments = 10
+    out_dir = Path(f"C:\\output\\tournament\\genetic_algorithm\\{n_tournaments}_tournaments_{rounds}_rounds_{players}_players")
+    out_dir.mkdir()
+    for _ in range(n_tournaments):
+        elite = optimize_tournament(pop_size, generations, players, rounds, sim_matches)
+        elite.record_metrics(out_dir / f"tournament_metrics_{time.time()}.csv")
